@@ -1,24 +1,21 @@
 package com.example.mindtracker
 
-// ==================== ИМПОРТЫ ====================
-import android.app.NotificationChannel      // Для создания канала уведомлений (Android 8+)
-import android.app.NotificationManager     // Для управления уведомлениями
-import android.content.Context             // Для доступа к SharedPreferences
-import android.os.Build                    // Для проверки версии Android
-import android.os.Bundle                   // Для сохранения состояния Activity
-import android.os.Handler                  // Для задержки выполнения кода
-import android.os.Looper                   // Для работы Handler в главном потоке
-import android.text.InputType              // Для типа клавиатуры (цифровая)
-import android.widget.Button               // Кнопка
-import android.widget.EditText             // Поле ввода текста
-import androidx.appcompat.app.AlertDialog  // Всплывающее диалоговое окно
-import androidx.appcompat.app.AppCompatActivity  // Базовая Activity с поддержкой старых версий
-import androidx.core.app.NotificationCompat      // Для создания уведомлений
-import androidx.work.PeriodicWorkRequestBuilder  // Для периодических фоновых задач
-import androidx.work.WorkManager                 // Менеджер фоновых задач
-import androidx.work.Worker                      // Базовый класс для фоновой работы
-import androidx.work.WorkerParameters            // Параметры фоновой работы
-import java.util.concurrent.TimeUnit             // Для указания времени (дни, часы, минуты)
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.widget.Button
+import android.widget.EditText
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
+import androidx.work.*
+
+import java.util.concurrent.TimeUnit
 
 /**
  * Главный экран приложения "Трекер когнитивных функций"
@@ -30,60 +27,56 @@ import java.util.concurrent.TimeUnit             // Для указания вр
  * - Статистика и интерпретация результатов
  *
  * @author Валишин М.М., Хабиров Э.И.
- * @version 1.0
+ * @version 2.0
  */
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        // Уникальное имя для WorkRequest (чтобы не создавать дубликаты)
+        private const val WORK_NAME = "daily_reminder_work"
+        // Фиксированный ID уведомления (чтобы не накапливались)
+        private const val NOTIFICATION_ID = 1001
+    }
+
     // ==================== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ====================
 
-    /** Текущий уровень сложности (1, 2, 3...). На уровне 1 показывается 3 цифры */
+    /** Текущий уровень, который показывается пользователю */
     private var currentLevel = 1
 
     /** Список цифр, которые нужно запомнить. Пример: [5, 2, 8] */
     private var currentSequence = mutableListOf<Int>()
 
-    /**
-     * Результат последней игры - максимальный достигнутый уровень.
-     * Пример: если прошли уровни 1,2,3 и ошиблись на 4-м, то результат = 3
-     */
+    /** Результат ТЕКУЩЕЙ игры - максимальный успешно пройденный уровень */
     private var currentMaxScore = 0
 
-    /** Рекорд за всё время использования приложения. Сохраняется навсегда */
+    /** Рекорд за всё время (из SharedPreferences) */
     private var allTimeBest = 0
 
     // ==================== ЖИЗНЕННЫЙ ЦИКЛ ACTIVITY ====================
 
-    /**
-     * Вызывается при создании Activity.
-     * Здесь происходит вся начальная настройка приложения.
-     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)  // Загружаем интерфейс из XML-файла
+        setContentView(R.layout.activity_main)
 
-        // ===== ЗАПРОС РАЗРЕШЕНИЯ НА УВЕДОМЛЕНИЯ (Android 13+) =====
-        // Начиная с Android 13 (API 33) нужно явно запрашивать разрешение на показ уведомлений
+        // Запрос разрешения на уведомления для Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(
                 arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
-                1001  // Код запроса (может быть любым)
+                1001
             )
         }
 
-        // ===== ЗАГРУЗКА СОХРАНЁННЫХ ДАННЫХ =====
-        loadAllData()  // Загружаем рекорд и результат последней игры
+        // Загружаем сохранённые данные
+        loadAllData()
 
-        // ===== ЗАПУСК ЕЖЕДНЕВНЫХ НАПОМИНАНИЙ =====
+        // Запускаем ежедневные напоминания
         setupReminders()
 
-        // ===== НАСТРОЙКА КНОПОК =====
-
-        // Кнопка "Начать тренировку" - запускает тест памяти
+        // Настройка кнопок
         findViewById<Button>(R.id.btnMemoryTest).setOnClickListener {
             startMemoryTest()
         }
 
-        // Кнопка "Статистика" - показывает рекорды и советы
         findViewById<Button>(R.id.btnStatistics).setOnClickListener {
             showStatistics()
         }
@@ -93,105 +86,92 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Сохраняет рекорд за всё время.
-     * @param score Новый рекорд
      */
     private fun saveBestScore(score: Int) {
-        // Получаем доступ к файлу настроек "mindtracker_prefs"
         val prefs = getSharedPreferences("mindtracker_prefs", Context.MODE_PRIVATE)
-        // Сохраняем целое число с ключом "best_score"
-        prefs.edit().putInt("best_score", score).apply()  // apply() - асинхронная запись
+        prefs.edit().putInt("best_score", score).apply()
         allTimeBest = score
-        println("Сохранён рекорд: $score")  // Лог для отладки
     }
 
     /**
      * Сохраняет результат последней игры.
-     * @param score Результат последней игры
      */
     private fun saveLastScore(score: Int) {
         val prefs = getSharedPreferences("mindtracker_prefs", Context.MODE_PRIVATE)
         prefs.edit().putInt("last_score", score).apply()
-        println("Сохранён последний результат: $score")
     }
 
     /**
-     * Загружает все сохранённые данные при запуске приложения.
-     * Если данных нет (первый запуск), возвращается 0.
+     * Загружает все сохранённые данные.
      */
     private fun loadAllData() {
         val prefs = getSharedPreferences("mindtracker_prefs", Context.MODE_PRIVATE)
-        allTimeBest = prefs.getInt("best_score", 0)      // Рекорд (по умолчанию 0)
-        currentMaxScore = prefs.getInt("last_score", 0)  // Последний результат (по умолчанию 0)
-        println("Загружено - Рекорд: $allTimeBest, Последний: $currentMaxScore")
+        allTimeBest = prefs.getInt("best_score", 0)
+        currentMaxScore = prefs.getInt("last_score", 0)
     }
 
     // ==================== УВЕДОМЛЕНИЯ (WorkManager) ====================
 
     /**
-     * Настраивает ежедневные напоминания через WorkManager.
-     * Уведомления будут приходить каждый день в 10:00 утра.
+     * Настраивает ежедневные напоминания.
+     * Используется уникальное имя, чтобы не создавать дубликаты.
      */
     private fun setupReminders() {
-        // Создаём периодическую задачу: повторять 1 раз в день
+        // Отменяем старые запросы
+        WorkManager.getInstance(this).cancelUniqueWork(WORK_NAME)
+
+        // Создаём периодическую задачу (каждый день в 10:00)
         val workRequest = PeriodicWorkRequestBuilder<ReminderWorker>(
-            1, TimeUnit.DAYS  // Интервал: 1 день
-        ).setInitialDelay(10, TimeUnit.HOURS)  // Первое уведомление через 10 часов (в 10 утра)
+            1, TimeUnit.DAYS
+        ).setInitialDelay(10, TimeUnit.HOURS)
             .build()
 
-        // Запускаем задачу
-        WorkManager.getInstance(this).enqueue(workRequest)
+        // Запускаем с уникальным именем
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            WORK_NAME,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            workRequest
+        )
     }
 
     /**
-     * Внутренний класс для выполнения фоновой работы (отправка уведомления).
-     * WorkManager вызывает doWork() в фоновом потоке.
+     * Внутренний класс для отправки уведомлений.
      */
     class ReminderWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
 
-        /**
-         * Главный метод, выполняемый в фоне.
-         * @return Result.success() - задача выполнена успешно
-         */
         override fun doWork(): Result {
-            createNotificationChannel()  // Создаём канал (нужно для Android 8+)
-            sendNotification()           // Отправляем уведомление
+            createNotificationChannel()
+            sendNotification()
             return Result.success()
         }
 
-        /**
-         * Создаёт канал уведомлений (требуется для Android 8+).
-         * Канал определяет важность и поведение уведомления.
-         */
         private fun createNotificationChannel() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = NotificationChannel(
-                    "memory_channel",           // ID канала
-                    "Тренировка памяти",        // Имя канала (видно пользователю)
-                    NotificationManager.IMPORTANCE_HIGH  // Высокая важность (звук + всплывание)
+                    "memory_channel",
+                    "Тренировка памяти",
+                    NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Напоминания о тренировке памяти"  // Описание канала
+                    description = "Напоминания о тренировке памяти"
+                    setShowBadge(false)
                 }
-                val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE)
-                        as NotificationManager
+                val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 manager.createNotificationChannel(channel)
             }
         }
 
-        /**
-         * Формирует и отправляет уведомление.
-         */
         private fun sendNotification() {
             val notification = NotificationCompat.Builder(applicationContext, "memory_channel")
-                .setSmallIcon(android.R.drawable.ic_menu_edit)  // Иконка уведомления
-                .setContentTitle("Тренируйте память!")       // Заголовок
+                .setSmallIcon(android.R.drawable.ic_menu_edit)
+                .setContentTitle("Тренируйте память!")
                 .setContentText("Пройдите тест за 2 минуты, чтобы улучшить когнитивные функции")
-                .setPriority(NotificationCompat.PRIORITY_HIGH)  // Высокий приоритет
-                .setAutoCancel(true)  // Уведомление исчезает после нажатия
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
                 .build()
 
-            val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
-            manager.notify(System.currentTimeMillis().toInt(), notification)
+            val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, notification)
         }
     }
 
@@ -199,68 +179,70 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Запускает новый тест памяти.
-     * Сбрасывает уровень и генерирует первую последовательность цифр.
+     * Важно: обнуляем результат текущей игры, но НЕ трогаем рекорд.
      */
     private fun startMemoryTest() {
-        currentLevel = 1                    // Начинаем с первого уровня
-        // Не обнуляем currentMaxScore! Он хранит результат прошлой игры для статистики
-        generateNewSequence()               // Создаём последовательность цифр
-        showMemoryDialog()                  // Показываем диалог с цифрами для запоминания
+        currentLevel = 1
+        currentMaxScore = 0          // Обнуляем результат ТЕКУЩЕЙ игры
+        generateNewSequence()
+        showMemoryDialog()
     }
 
     /**
-     * Генерирует последовательность случайных цифр.
-     * Длина последовательности = текущий уровень + 2 (уровень 1 → 3 цифры, уровень 2 → 4 цифры и т.д.)
+     * Генерирует последовательность цифр для текущего уровня.
+     * Длина = уровень + 2 (1 уровень → 3 цифры, 2 уровень → 4 цифры)
      */
     private fun generateNewSequence() {
-        val length = currentLevel + 2               // Вычисляем длину
-        currentSequence.clear()                      // Очищаем старую последовательность
+        val length = currentLevel + 2
+        currentSequence.clear()
         repeat(length) {
-            currentSequence.add((1..9).random())    // Добавляем случайную цифру от 1 до 9
+            currentSequence.add((1..9).random())
         }
     }
 
     /**
      * Показывает диалог с последовательностью цифр.
-     * Через 3 секунды диалог автоматически переключится на поле ввода.
+     * Через 3 секунды показывает поле для ввода.
+     * При нажатии "Отмена" - завершаем игру.
      */
     private fun showMemoryDialog() {
-        val numbersText = currentSequence.joinToString("  ")  // [5,2,8] → "5  2  8"
+        val numbersText = currentSequence.joinToString("  ")
 
         AlertDialog.Builder(this)
             .setTitle("Тест памяти - Уровень $currentLevel")
             .setMessage("Запомните последовательность:\n\n$numbersText\n\nЧерез 3 секунды нужно будет ввести цифры")
             .setPositiveButton("Готово") { _, _ ->
-                // Задержка 3 секунды перед показом поля ввода
                 Handler(Looper.getMainLooper()).postDelayed({
                     showInputDialog()
-                }, 3000)  // 3000 миллисекунд = 3 секунды
+                }, 3000)
             }
-            .setNegativeButton("Отмена") { _, _ -> }  // Отмена - ничего не делаем
-            .setCancelable(false)  // Запрещаем закрыть диалог нажатием вне его
+            .setNegativeButton("Отмена") { _, _ ->
+                // Отмена - завершаем игру с текущим результатом
+                saveAndShowResult()
+            }
+            .setCancelable(false)
             .show()
     }
 
     /**
      * Показывает диалог с полем для ввода ответа.
-     * Пользователь вводит цифры подряд (например: 528)
      */
     private fun showInputDialog() {
         val input = EditText(this).apply {
-            hint = "Введите цифры подряд (например: 528)"      // Подсказка в поле
-            inputType = InputType.TYPE_CLASS_NUMBER            // Только цифровая клавиатура
+            hint = "Введите цифры подряд (например: 528)"
+            inputType = InputType.TYPE_CLASS_NUMBER
         }
 
         AlertDialog.Builder(this)
             .setTitle("Введите последовательность")
             .setMessage("Введите все цифры подряд без пробелов:")
-            .setView(input)  // Добавляем поле ввода в диалог
+            .setView(input)
             .setPositiveButton("Проверить") { _, _ ->
                 val userInput = input.text.toString().trim()
                 checkAnswer(userInput)
             }
             .setNegativeButton("Сдаюсь") { _, _ ->
-                saveAndShowResult()  // Досрочное завершение теста
+                saveAndShowResult()
             }
             .setCancelable(false)
             .show()
@@ -268,34 +250,32 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Проверяет ответ пользователя.
-     * @param userInput Строка, введённая пользователем (например: "528")
      */
     private fun checkAnswer(userInput: String) {
-        // Преобразуем "528" в список [5, 2, 8]
-        // map - каждый символ превращаем в число, filterNotNull - убираем не-цифры
+        // Преобразуем "528" в [5, 2, 8]
         val userNumbers = userInput.map { it.toString().toIntOrNull() }
             .filterNotNull()
 
-        // Сравниваем введённые цифры с правильной последовательностью
         if (userNumbers == currentSequence) {
             // ===== ПРАВИЛЬНЫЙ ОТВЕТ =====
-            currentLevel++  // Повышаем уровень
-
-            val newScore = currentLevel - 1  // Текущий результат (максимальный пройденный уровень)
-            if (newScore > currentMaxScore) {
-                currentMaxScore = newScore   // Обновляем лучший результат сессии
+            // Запоминаем, какой уровень только что прошли
+            val completedLevel = currentLevel
+            if (completedLevel > currentMaxScore) {
+                currentMaxScore = completedLevel
             }
 
-            // Диалог успеха - предлагаем продолжить или закончить
+            // Переходим на следующий уровень
+            currentLevel++
+
             AlertDialog.Builder(this)
                 .setTitle("Правильно!")
-                .setMessage("Уровень ${currentLevel - 1} пройден!\n\nТекущий результат: $currentMaxScore")
+                .setMessage("Уровень $completedLevel пройден!\n\nТекущий результат: $currentMaxScore")
                 .setPositiveButton("Далее") { _, _ ->
-                    generateNewSequence()  // Генерируем новую, более длинную последовательность
-                    showMemoryDialog()     // Показываем следующий уровень
+                    generateNewSequence()
+                    showMemoryDialog()
                 }
                 .setNegativeButton("Закончить") { _, _ ->
-                    saveAndShowResult()    // Сохраняем результат и завершаем
+                    saveAndShowResult()
                 }
                 .show()
         } else {
@@ -312,13 +292,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Сохраняет результат последней игры и показывает его.
-     * Обновляет рекорд, если текущий результат его побил.
+     * Сохраняет результат и показывает его.
      */
     private fun saveAndShowResult() {
-        println("Сохраняем результат: $currentMaxScore")
-
-        // Сохраняем результат последней игры
+        // Сохраняем результат текущей игры
         saveLastScore(currentMaxScore)
 
         // Если побит рекорд - сохраняем новый рекорд
@@ -326,20 +303,13 @@ class MainActivity : AppCompatActivity() {
             saveBestScore(currentMaxScore)
         }
 
-        // Показываем диалог с результатом
         showResult()
     }
 
     /**
-     * Показывает финальный результат теста с медицинской интерпретацией.
-     * Интерпретация основана на нормативах теста Digit Span:
-     * - 7+ цифр: отличный результат
-     * - 5-6: хороший
-     * - 3-4: средний
-     * - 0-2: требует тренировки
+     * Показывает финальный результат с интерпретацией.
      */
     private fun showResult() {
-        // Проверяем, установлен ли новый рекорд
         val isNewRecord = currentMaxScore > 0 &&
                 currentMaxScore == allTimeBest &&
                 currentMaxScore > 0
@@ -350,7 +320,6 @@ class MainActivity : AppCompatActivity() {
             "\n\nРекорд за всё время: $allTimeBest"
         }
 
-        // Медицинская интерпретация результата (по шкале Digit Span)
         val interpretation = when {
             currentMaxScore >= 7 -> "Отлично! Ваша память в отличной форме!"
             currentMaxScore >= 5 -> "Хороший результат! Регулярные тренировки помогут улучшить его."
@@ -368,11 +337,10 @@ class MainActivity : AppCompatActivity() {
     // ==================== СТАТИСТИКА ====================
 
     /**
-     * Показывает статистику: рекорд за всё время, последний результат и советы.
-     * Перед показом перезагружает данные из SharedPreferences.
+     * Показывает статистику и советы.
      */
     private fun showStatistics() {
-        // Перезагружаем данные (на случай, если они изменились в другой сессии)
+        // Перезагружаем данные из SharedPreferences
         loadAllData()
 
         AlertDialog.Builder(this)
