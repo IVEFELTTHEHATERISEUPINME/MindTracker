@@ -26,7 +26,6 @@ import java.util.concurrent.TimeUnit
  * - Ежедневные напоминания через WorkManager
  * - Статистика и интерпретация результатов
  *
- * @author Валишин М.М., Хабиров Э.И.
  * @version 2.0
  */
 class MainActivity : AppCompatActivity() {
